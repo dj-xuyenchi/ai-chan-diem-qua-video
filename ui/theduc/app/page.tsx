@@ -1,29 +1,97 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { chartSets, initialMembers, initialSchoolClasses, initialStudents, navGroups, sectionDescriptions } from "./mock/mock";
 import { Icon } from "./component/Icon";
-import { StudentsManagement } from "./component/StudentsManagement";
+import { UsersManagement } from "./component/UsersManagement";
 import { ClassesManagement } from "./component/ClassesManagement";
 import type { VideoAssignment } from "./type/VideoAssignment";
+import { ForcePasswordChangeScreen, LoginScreen } from "./component/AuthScreens";
+import { changePassword, getCurrentUser, login, logout } from "./api/authApi";
+import type { AuthUser } from "./domain/AuthUser";
 
-
-
+const TABLE_PAGE_SIZE = 20;
 
 
 
 export default function Home() {
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [sessionError, setSessionError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void getCurrentUser()
+      .then((user) => {
+        if (active) setAuthUser(user);
+      })
+      .catch((error: unknown) => {
+        if (active) setSessionError(error instanceof Error ? error.message : "Không thể kiểm tra phiên đăng nhập.");
+      })
+      .finally(() => {
+        if (active) setCheckingSession(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (checkingSession) {
+    return <main className="auth-loading" aria-label="Đang kiểm tra phiên đăng nhập"><span /></main>;
+  }
+
+  if (!authUser) {
+    return (
+      <LoginScreen
+        initialError={sessionError}
+        onLogin={async (email, password) => setAuthUser(await login(email, password))}
+      />
+    );
+  }
+
+  if (authUser.doiMatKhauLanDau) {
+    return (
+      <ForcePasswordChangeScreen
+        user={authUser}
+        onChangePassword={async (password) => setAuthUser(await changePassword(password))}
+      />
+    );
+  }
+
+  return (
+    <Dashboard
+      authUser={authUser}
+      onLogout={async () => {
+        await logout();
+        setAuthUser(null);
+      }}
+    />
+  );
+}
+
+function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () => Promise<void> }) {
   const [activeNav, setActiveNav] = useState("Tổng quan");
   const [query, setQuery] = useState("");
   const [timeframe, setTimeframe] = useState<keyof typeof chartSets>("30 ngày");
   const [members, setMembers] = useState(initialMembers);
-  const [students, setStudents] = useState(initialStudents);
+  const [memberPagination, setMemberPagination] = useState({ page: 1, query });
+  const [students] = useState(initialStudents);
   const [schoolClasses, setSchoolClasses] = useState(initialSchoolClasses);
   const [assignments, setAssignments] = useState<VideoAssignment[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const userInitials = authUser.hoTen
+    .trim()
+    .split(/\s+/)
+    .slice(-2)
+    .map((part) => part[0])
+    .join("")
+    .toLocaleUpperCase("vi");
+  const userRole = authUser.loaiNguoiDung === "GIAO_VIEN" ? "Giáo viên" : "Sinh viên";
 
   const visibleMembers = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("vi");
@@ -31,6 +99,17 @@ export default function Home() {
       `${member.name} ${member.email} ${member.plan}`.toLocaleLowerCase("vi").includes(normalizedQuery),
     );
   }, [members, query]);
+  const memberPageCount = Math.max(1, Math.ceil(visibleMembers.length / TABLE_PAGE_SIZE));
+  const requestedMemberPage = memberPagination.query === query ? memberPagination.page : 1;
+  const memberPage = Math.min(requestedMemberPage, memberPageCount);
+  const visibleMemberPage = visibleMembers.slice(
+    (memberPage - 1) * TABLE_PAGE_SIZE,
+    memberPage * TABLE_PAGE_SIZE,
+  );
+
+  function setMemberPage(page: number, pageQuery = query) {
+    setMemberPagination({ page, query: pageQuery });
+  }
 
   function notify(message: string) {
     setToast(message);
@@ -62,6 +141,7 @@ export default function Home() {
     setMembers((current) => [{ name, email, initials, color: "blue", plan, status: "Đang hoạt động", joined: "Hôm nay" }, ...current]);
     setModalOpen(false);
     setQuery("");
+    setMemberPage(1, "");
     notify(`Đã thêm hội viên ${name}`);
   }
 
@@ -85,7 +165,9 @@ export default function Home() {
           {navGroups.map((group) => (
             <div className="nav-group" key={group.label}>
               <p className="nav-group-label">{group.label}</p>
-              {group.items.map((item) => (
+              {group.items
+                .filter((item) => item.label !== "Người dùng" || authUser.loaiNguoiDung === "GIAO_VIEN")
+                .map((item) => (
                 <button
                   className={`nav-item ${activeNav === item.label ? "nav-item-active" : ""}`}
                   key={item.label}
@@ -96,7 +178,6 @@ export default function Home() {
                 >
                   <Icon name={item.icon} size={19} />
                   <span>{item.label}</span>
-                  {item.label === "Sinh viên" && <span className="nav-count">{students.length}</span>}
                   {item.label === "Lớp học" && <span className="nav-count">{schoolClasses.length}</span>}
                 </button>
               ))}
@@ -112,8 +193,8 @@ export default function Home() {
             <button onClick={() => notify("Đội ngũ hỗ trợ sẽ liên hệ với bạn sớm nhất!")}>Liên hệ hỗ trợ <Icon name="arrow" size={14} /></button>
           </div>
           <button className="profile-button" onClick={() => setActiveNav("Cài đặt")}>
-            <span className="profile-avatar">TN</span>
-            <span className="profile-copy"><strong>Thảo Nguyễn</strong><small>Quản trị viên</small></span>
+            <span className="profile-avatar">{userInitials}</span>
+            <span className="profile-copy"><strong>{authUser.hoTen}</strong><small>{userRole}</small></span>
             <Icon name="more" size={18} />
           </button>
         </div>
@@ -136,7 +217,23 @@ export default function Home() {
               {showNotifications && <div className="notification-popover"><strong>Thông báo</strong><p>Bạn có 3 hội viên mới trong tuần này.</p><p>Lớp Yoga Flow còn 2 chỗ trống.</p></div>}
             </div>
             <span className="topbar-divider" />
-            <button className="topbar-user" onClick={() => setActiveNav("Cài đặt")}><span className="profile-avatar">TN</span><span>Thảo Nguyễn</span><Icon name="chevron" size={14} /></button>
+            <button className="topbar-user" onClick={() => setActiveNav("Cài đặt")}><span className="profile-avatar">{userInitials}</span><span>{authUser.hoTen}</span><Icon name="chevron" size={14} /></button>
+            <button
+              className="sign-out-button"
+              disabled={loggingOut}
+              onClick={async () => {
+                setLoggingOut(true);
+                try {
+                  await onLogout();
+                } catch (error) {
+                  notify(error instanceof Error ? error.message : "Không thể đăng xuất.");
+                } finally {
+                  setLoggingOut(false);
+                }
+              }}
+            >
+              {loggingOut ? "Đang thoát..." : "Đăng xuất"}
+            </button>
           </div>
         </header>
 
@@ -147,7 +244,7 @@ export default function Home() {
               <h1>{activeNav === "Tổng quan" ? "Chào buổi sáng, Thảo 👋" : activeNav}</h1>
               <p>{sectionDescriptions[activeNav]}</p>
             </div>
-            {activeNav !== "Sinh viên" && activeNav !== "Lớp học" && (
+            {activeNav !== "Người dùng" && activeNav !== "Lớp học" && (
               <div className="heading-actions">
                 <button className="button button-secondary" onClick={exportMembers}><Icon name="download" size={17} /> Xuất báo cáo</button>
                 <button className="button button-primary" onClick={() => setModalOpen(true)}><Icon name="plus" size={18} /> Thêm hội viên</button>
@@ -155,8 +252,8 @@ export default function Home() {
             )}
           </div>
 
-          {activeNav === "Sinh viên" ? (
-            <StudentsManagement students={students} setStudents={setStudents} query={query} setQuery={setQuery} notify={notify} />
+          {activeNav === "Người dùng" ? (
+            <UsersManagement query={query} setQuery={setQuery} notify={notify} operatorUserId={authUser.id} />
           ) : activeNav === "Lớp học" ? (
             <ClassesManagement schoolClasses={schoolClasses} setSchoolClasses={setSchoolClasses} students={students} assignments={assignments} setAssignments={setAssignments} query={query} setQuery={setQuery} notify={notify} />
           ) : (
@@ -234,16 +331,23 @@ export default function Home() {
             <div className="members-heading">
               <div><div className="members-title"><h2>Hội viên mới</h2><span className="member-count">{members.length}</span></div><p>Danh sách hội viên tham gia gần đây</p></div>
               <div className="members-actions">
-                <label className="table-search"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm hội viên..." aria-label="Tìm hội viên" /></label>
+                <label className="table-search"><Icon name="search" size={16} /><input value={query} onChange={(event) => { setMemberPage(1, event.target.value); setQuery(event.target.value); }} placeholder="Tìm hội viên..." aria-label="Tìm hội viên" /></label>
                 <button className="button button-secondary filter-button" onClick={() => notify("Đang hiển thị tất cả trạng thái hội viên")}>Trạng thái <Icon name="chevron" size={14} /></button>
                 <button className="view-all-button" onClick={() => setActiveNav("Hội viên")}>Xem tất cả <Icon name="arrow" size={14} /></button>
               </div>
             </div>
             <div className="table-scroll"><table>
               <thead><tr><th>HỘI VIÊN</th><th>GÓI TẬP</th><th>TRẠNG THÁI</th><th>NGÀY THAM GIA</th><th /></tr></thead>
-              <tbody>{visibleMembers.length > 0 ? visibleMembers.slice(0, 5).map((member) => <tr key={`${member.email}-${member.joined}`}><td><div className="member-cell"><span className={`member-avatar avatar-${member.color}`}>{member.initials}</span><span><strong>{member.name}</strong><small>{member.email}</small></span></div></td><td><span className="plan-name">{member.plan}</span></td><td><span className={`status-pill ${member.status === "Đang hoạt động" ? "status-active" : member.status === "Sắp hết hạn" ? "status-ending" : "status-paused"}`}><i />{member.status}</span></td><td className="joined-date">{member.joined}</td><td><button className="row-menu" aria-label={`Tùy chọn ${member.name}`} onClick={() => notify(`Đang xem hồ sơ ${member.name}`)}><Icon name="more" size={18} /></button></td></tr>) : <tr><td colSpan={5} className="empty-state">Không tìm thấy hội viên phù hợp.</td></tr>}</tbody>
+              <tbody>{visibleMemberPage.length > 0 ? visibleMemberPage.map((member) => <tr key={`${member.email}-${member.joined}`}><td><div className="member-cell"><span className={`member-avatar avatar-${member.color}`}>{member.initials}</span><span><strong>{member.name}</strong><small>{member.email}</small></span></div></td><td><span className="plan-name">{member.plan}</span></td><td><span className={`status-pill ${member.status === "Đang hoạt động" ? "status-active" : member.status === "Sắp hết hạn" ? "status-ending" : "status-paused"}`}><i />{member.status}</span></td><td className="joined-date">{member.joined}</td><td><button className="row-menu" aria-label={`Tùy chọn ${member.name}`} onClick={() => notify(`Đang xem hồ sơ ${member.name}`)}><Icon name="more" size={18} /></button></td></tr>) : <tr><td colSpan={5} className="empty-state">Không tìm thấy hội viên phù hợp.</td></tr>}</tbody>
             </table></div>
-            <div className="table-footer"><span>Hiển thị <strong>{Math.min(visibleMembers.length, 5)}</strong> trong tổng số <strong>{visibleMembers.length}</strong> hội viên</span><div><button disabled aria-label="Trang trước"><Icon name="chevron" size={16} className="previous-chevron" /></button><button className="page-number">1</button><button aria-label="Trang tiếp theo" onClick={() => notify("Bạn đang ở trang đầu tiên")}><Icon name="chevron" size={16} /></button></div></div>
+            <div className="table-footer">
+              <span>Hiển thị <strong>{visibleMembers.length ? (memberPage - 1) * TABLE_PAGE_SIZE + 1 : 0}–{Math.min(memberPage * TABLE_PAGE_SIZE, visibleMembers.length)}</strong> trong <strong>{visibleMembers.length}</strong> hội viên</span>
+              <div>
+                <button type="button" disabled={memberPage === 1} aria-label="Trang trước" onClick={() => setMemberPage(memberPage - 1)}><Icon name="chevron" size={16} className="previous-chevron" /></button>
+                <span className="page-number">{memberPage} / {memberPageCount}</span>
+                <button type="button" disabled={memberPage === memberPageCount} aria-label="Trang sau" onClick={() => setMemberPage(memberPage + 1)}><Icon name="chevron" size={16} /></button>
+              </div>
+            </div>
           </section>
             </>
           )}

@@ -16,6 +16,16 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Backend API
+
+Start the Spring Boot API on `http://localhost:8080`. The dashboard first requires a backend login with an existing teacher or student account.
+
+The UI uses `NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:8080/api`). The backend uses an HttpOnly session cookie and CSRF tokens for user-management requests; audit fields use the authenticated user's ID.
+
+New users receive a random 12–18 character temporary password, shown once after creation. Existing passwordless accounts must be initialized with the backend's `app.auth.legacy-password-export-path` option; see [the backend API guide](../../ai/HELP.md). Users are required to change temporary passwords at first sign-in. Passwords are stored as PBKDF2-HMAC-SHA256 hashes.
+
+Tables show at most 20 rows per page and use row order (STT) instead of exposing database IDs.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

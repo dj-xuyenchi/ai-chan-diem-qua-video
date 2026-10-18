@@ -30,7 +30,7 @@ export const initialSchoolClasses: SchoolClass[] = [
 export  const sectionDescriptions: Record<string, string> = {
   "Tổng quan": "Đây là những gì đang diễn ra tại phòng tập của bạn hôm nay.",
   "Hội viên": "Theo dõi danh sách, trạng thái và gói tập của hội viên.",
-  "Sinh viên": "Quản lý thông tin, lớp học và hồ sơ sinh viên.",
+  "Người dùng": "Quản lý hồ sơ giáo viên và sinh viên.",
   "Lịch tập": "Lịch tập hôm nay và những khung giờ sắp diễn ra.",
   "Lớp học": "Quản lý lớp học, bài tập video và bài nộp của sinh viên.",
   "Thanh toán": "Theo dõi doanh thu và các giao dịch gần đây.",
@@ -42,7 +42,7 @@ export  const sectionDescriptions: Record<string, string> = {
 export const navGroups = [
   {
     label: "TỔNG QUAN",
-    items: [{ label: "Tổng quan", icon: "grid" as const }, { label: "Sinh viên", icon: "users" as const }],
+    items: [{ label: "Tổng quan", icon: "grid" as const }, { label: "Người dùng", icon: "users" as const }],
   },
   {
     label: "QUẢN LÝ",

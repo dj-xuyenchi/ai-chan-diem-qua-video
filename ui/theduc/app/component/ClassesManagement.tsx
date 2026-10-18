@@ -19,6 +19,8 @@ type ClassesManagementProps = {
   notify: (message: string) => void;
 };
 
+const PAGE_SIZE = 20;
+
 export function ClassesManagement({
   schoolClasses,
   setSchoolClasses,
@@ -30,6 +32,7 @@ export function ClassesManagement({
   notify,
 }: ClassesManagementProps) {
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
+  const [pagination, setPagination] = useState({ page: 1, query });
   const [viewMode, setViewMode] = useState<"teacher" | "student">("teacher");
   const [modalOpen, setModalOpen] = useState(false);
   const [editingClass, setEditingClass] = useState<SchoolClass | null>(null);
@@ -45,6 +48,14 @@ export function ClassesManagement({
       `${schoolClass.id} ${schoolClass.code} ${schoolClass.homeroomTeacher}`.toLocaleLowerCase("vi").includes(normalizedQuery),
     );
   }, [schoolClasses, query]);
+  const pageCount = Math.max(1, Math.ceil(visibleClasses.length / PAGE_SIZE));
+  const requestedPage = pagination.query === query ? pagination.page : 1;
+  const currentPage = Math.min(requestedPage, pageCount);
+  const paginatedClasses = visibleClasses.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  function setPage(nextPage: number) {
+    setPagination({ page: nextPage, query });
+  }
 
   const selectedClass = schoolClasses.find((schoolClass) => schoolClass.id === selectedClassId) ?? null;
   const classAssignments = assignments.filter((assignment) => assignment.classId === selectedClassId);
@@ -92,6 +103,7 @@ export function ClassesManagement({
         updatedAt: "",
       }, ...current]);
       setQuery("");
+      setPage(1);
       notify(`Đã thêm lớp ${code}`);
     }
 
@@ -209,12 +221,12 @@ export function ClassesManagement({
         <div className="table-scroll student-table-scroll">
           <table className="student-table class-table">
             <thead>
-              <tr><th>ID</th><th>MÃ LỚP</th><th>SỐ LƯỢNG SINH VIÊN</th><th>NGÀY TẠO</th><th>NGƯỜI TẠO</th><th>GV CHỦ NHIỆM</th><th>NGÀY CẬP NHẬT</th><th>BÀI TẬP VIDEO</th><th>THAO TÁC</th></tr>
+              <tr><th>STT</th><th>MÃ LỚP</th><th>SỐ LƯỢNG SINH VIÊN</th><th>NGÀY TẠO</th><th>NGƯỜI TẠO</th><th>GV CHỦ NHIỆM</th><th>NGÀY CẬP NHẬT</th><th>BÀI TẬP VIDEO</th><th>THAO TÁC</th></tr>
             </thead>
             <tbody>
-              {visibleClasses.length > 0 ? visibleClasses.map((schoolClass) => (
+              {paginatedClasses.length > 0 ? paginatedClasses.map((schoolClass, index) => (
                 <tr key={schoolClass.id}>
-                  <td><span className="student-id">{schoolClass.id}</span></td>
+                  <td>{(currentPage - 1) * PAGE_SIZE + index + 1}</td>
                   <td><span className="student-class">{schoolClass.code}</span></td>
                   <td><span className="class-student-count">{schoolClass.studentCount}<span> sinh viên</span></span></td>
                   <td>{formatDate(schoolClass.createdAt)}</td>
@@ -233,7 +245,12 @@ export function ClassesManagement({
           </table>
         </div>
         <div className="table-footer">
-          <span>Hiển thị <strong>{visibleClasses.length}</strong> trong tổng số <strong>{schoolClasses.length}</strong> lớp học</span>
+          <span>Hiển thị <strong>{visibleClasses.length ? (currentPage - 1) * PAGE_SIZE + 1 : 0}–{Math.min(currentPage * PAGE_SIZE, visibleClasses.length)}</strong> trong <strong>{visibleClasses.length}</strong> kết quả ({schoolClasses.length} lớp học)</span>
+          <div>
+            <button type="button" aria-label="Trang trước" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}><Icon name="chevron" size={13} className="previous-chevron" /></button>
+            <span className="page-number">{currentPage} / {pageCount}</span>
+            <button type="button" aria-label="Trang sau" disabled={currentPage === pageCount} onClick={() => setPage(currentPage + 1)}><Icon name="chevron" size={13} /></button>
+          </div>
           <span className="student-table-note">Bấm biểu tượng video để mở bài tập của lớp</span>
         </div>
       </section>
@@ -270,7 +287,7 @@ export function ClassesManagement({
         </div>
 
         {viewMode === "student" && !selectedStudent ? (
-          <div className="assignment-empty"><span className="assignment-empty-icon"><Icon name="users" size={23} /></span><h3>Chưa có hồ sơ học sinh trong lớp này</h3><p>Thêm học sinh có mã lớp <strong>{selectedClass.code}</strong> trong mục Sinh viên để xem và nộp bài.</p></div>
+          <div className="assignment-empty"><span className="assignment-empty-icon"><Icon name="users" size={23} /></span><h3>Chưa có hồ sơ học sinh trong lớp này</h3><p>Thêm học sinh có mã lớp <strong>{selectedClass.code}</strong> trong mục Người dùng để xem và nộp bài.</p></div>
         ) : classAssignments.length > 0 ? (
           <div className="assignment-grid">
             {classAssignments.map((assignment) => {
