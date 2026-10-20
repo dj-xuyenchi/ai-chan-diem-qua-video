@@ -15,6 +15,10 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 102MB
 
 server:
   servlet:
@@ -24,3 +28,13 @@ server:
         http-only: true
         secure: ${SESSION_COOKIE_SECURE:false}
         same-site: lax
+  tomcat:
+    max-swallow-size: 102MB
+
+app:
+  ai:
+    python-executable: ${AI_PYTHON_EXECUTABLE:${user.home}/AppData/Local/theduc-ai/venv/Scripts/python.exe}
+    script-path: ${AI_SCORING_SCRIPT_PATH:../mvp_scoring.py}
+  video:
+    storage-dir: ${VIDEO_STORAGE_DIR:data/videos}
+    max-file-size-bytes: 104857600

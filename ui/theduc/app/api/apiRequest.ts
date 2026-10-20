@@ -29,7 +29,8 @@ async function readError(response: Response) {
 export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("Content-Type")) {
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  if (init?.body && !isFormData && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   if (method !== "GET" && method !== "HEAD" && getCsrfToken()) {

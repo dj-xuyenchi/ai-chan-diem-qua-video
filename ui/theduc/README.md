@@ -26,6 +26,10 @@ New users receive a random 12–18 character temporary password, shown once afte
 
 Tables show at most 20 rows per page and use row order (STT) instead of exposing database IDs.
 
+The **Lớp học** section uses backend-managed classes and video assignments. Teachers can enroll any number of students, upload assignment videos, review submissions, and grade them from 0 to 10. Students can submit/resubmit videos and view submissions from classmates in the same class. Assignment and submission uploads are limited to 100 MB each and stored by the backend in `VIDEO_STORAGE_DIR` (default `ai/data/videos`); configure persistent storage before deployment.
+
+Teachers can open each assignment's review screen to see submission totals, search students, and page through submissions. When a student submits or resubmits a video, the backend automatically evaluates it against the assignment video and stores the AI suggestion with the submission. Teachers can also request a new analysis via `POST /api/lop-hoc/{lopHocId}/bai-tap/{baiTapId}/bai-nop/{baiNopId}/ai-danh-gia` (teacher session and CSRF token required). AI suggests movement similarity, relative movement duration, and a score from 0 to 10; it never replaces the teacher's manual grade. An AI analysis failure does not discard the submission and is shown so the teacher can retry. Install Python 3.9–3.12 and the packages in `requirements-ai.txt`, then configure `AI_PYTHON_EXECUTABLE` and `AI_SCORING_SCRIPT_PATH` for the backend environment if the defaults (`python` and `../mvp_scoring.py`) do not apply. The current MVP compares knee angles and hip position and estimates speed from the time the knee angle changes; camera framing or an unclear pose can affect the suggestion.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

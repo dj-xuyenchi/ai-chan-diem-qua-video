@@ -32,8 +32,17 @@ public class AuthInterceptor implements HandlerInterceptor {
 			return false;
 		}
 		if (!"GIAO_VIEN".equals(session.getAttribute(AuthController.SESSION_USER_ROLE))) {
-			response.sendError(HttpServletResponse.SC_FORBIDDEN);
-			return false;
+			String requestUri = request.getRequestURI();
+			boolean classroomPath = "/api/lop-hoc".equals(requestUri)
+					|| requestUri.startsWith("/api/lop-hoc/");
+			boolean studentRead = classroomPath && "GET".equalsIgnoreCase(request.getMethod());
+			boolean studentSubmission = "HOC_SINH".equals(session.getAttribute(AuthController.SESSION_USER_ROLE))
+					&& request.getMethod().equalsIgnoreCase("POST")
+					&& requestUri.matches("^/api/lop-hoc/\\d+/bai-tap/\\d+/bai-nop$");
+			if (!studentRead && !studentSubmission) {
+				response.sendError(HttpServletResponse.SC_FORBIDDEN);
+				return false;
+			}
 		}
 		if (!"GET".equalsIgnoreCase(request.getMethod())) {
 			String expectedToken = (String) session.getAttribute(AuthController.SESSION_CSRF_TOKEN);

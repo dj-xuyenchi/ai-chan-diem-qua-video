@@ -28,7 +28,7 @@ export const initialSchoolClasses: SchoolClass[] = [
 ];
 
 export  const sectionDescriptions: Record<string, string> = {
-  "Tổng quan": "Đây là những gì đang diễn ra tại phòng tập của bạn hôm nay.",
+  "Tổng quan": "Theo dõi hoạt động lớp học, bài nộp và kết quả học tập.",
   "Hội viên": "Theo dõi danh sách, trạng thái và gói tập của hội viên.",
   "Người dùng": "Quản lý hồ sơ giáo viên và sinh viên.",
   "Lịch tập": "Lịch tập hôm nay và những khung giờ sắp diễn ra.",

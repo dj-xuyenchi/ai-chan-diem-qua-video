@@ -1,17 +1,93 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { chartSets, initialMembers, initialSchoolClasses, initialStudents, navGroups, sectionDescriptions } from "./mock/mock";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { chartSets, initialMembers, navGroups, sectionDescriptions } from "./mock/mock";
 import { Icon } from "./component/Icon";
 import { UsersManagement } from "./component/UsersManagement";
 import { ClassesManagement } from "./component/ClassesManagement";
-import type { VideoAssignment } from "./type/VideoAssignment";
+import { LearningOverview } from "./component/LearningOverview";
 import { ForcePasswordChangeScreen, LoginScreen } from "./component/AuthScreens";
 import { changePassword, getCurrentUser, login, logout } from "./api/authApi";
 import type { AuthUser } from "./domain/AuthUser";
+import { useLearningData } from "./hooks/useLearningData";
+import type { LearningClassData } from "./hooks/useLearningData";
 
 const TABLE_PAGE_SIZE = 20;
 
+type LearningNotification = {
+  id: string;
+  message: string;
+  detail: string;
+  date: string;
+  classId: number;
+  assignmentId?: number;
+};
+
+function withinRecentDays(value: string, days: number) {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp >= Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+function relativeTime(value: string) {
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60_000));
+  if (minutes < 1) return "Vừa xong";
+  if (minutes < 60) return `${minutes} phút trước`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} giờ trước`;
+  const days = Math.floor(hours / 24);
+  return `${days} ngày trước`;
+}
+
+function buildLearningNotifications(
+  role: AuthUser["loaiNguoiDung"],
+  userId: number,
+  classes: LearningClassData[],
+): LearningNotification[] {
+  const notifications: LearningNotification[] = [];
+  for (const { classroom, assignments } of classes) {
+    if (role === "GIAO_VIEN") {
+      for (const assignment of assignments) {
+        for (const submission of assignment.baiNop) {
+          if (!withinRecentDays(submission.ngayNop, 14)) continue;
+          notifications.push({
+            id: `submission-${submission.id}`,
+            message: `${submission.tenHocSinh} đã nộp bài`,
+            detail: `${assignment.tieuDe} · ${classroom.tenLop}`,
+            date: submission.ngayNop,
+            classId: classroom.id,
+            assignmentId: assignment.id,
+          });
+        }
+      }
+      continue;
+    }
+
+    const membership = classroom.hocSinh.find((student) => student.id === userId);
+    if (membership && withinRecentDays(membership.ngayThamGia, 14)) {
+      notifications.push({
+        id: `joined-${classroom.id}-${membership.ngayThamGia}`,
+        message: `Giáo viên đã thêm bạn vào lớp`,
+        detail: `${classroom.tenLop} · ${classroom.maLop}`,
+        date: membership.ngayThamGia,
+        classId: classroom.id,
+      });
+    }
+    for (const assignment of assignments) {
+      if (!withinRecentDays(assignment.ngayTao, 14)) continue;
+      notifications.push({
+        id: `assignment-${assignment.id}`,
+        message: `${classroom.tenGiaoVien} vừa giao bài tập`,
+        detail: `${assignment.tieuDe} · ${classroom.tenLop}${assignment.hanNop ? ` · Hạn ${new Date(assignment.hanNop).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" })}` : ""}`,
+        date: assignment.ngayTao,
+        classId: classroom.id,
+        assignmentId: assignment.id,
+      });
+    }
+  }
+  return notifications
+    .sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime())
+    .slice(0, 12);
+}
 
 
 export default function Home() {
@@ -75,14 +151,43 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   const [timeframe, setTimeframe] = useState<keyof typeof chartSets>("30 ngày");
   const [members, setMembers] = useState(initialMembers);
   const [memberPagination, setMemberPagination] = useState({ page: 1, query });
-  const [students] = useState(initialStudents);
-  const [schoolClasses, setSchoolClasses] = useState(initialSchoolClasses);
-  const [assignments, setAssignments] = useState<VideoAssignment[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const globalSearchInput = useRef<HTMLInputElement>(null);
+  const [classTarget, setClassTarget] = useState<{ classId: number; studentId?: number; assignmentId?: number } | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  const learningData = useLearningData(authUser.loaiNguoiDung);
+  const handleClassTargetHandled = useCallback(() => setClassTarget(null), []);
+
+  const notifications = useMemo(
+    () => buildLearningNotifications(authUser.loaiNguoiDung, authUser.id, learningData.classes),
+    [authUser.id, authUser.loaiNguoiDung, learningData.classes],
+  );
+  const normalizedGlobalQuery = globalQuery.trim().toLocaleLowerCase("vi");
+  const matchingClasses = normalizedGlobalQuery
+    ? learningData.classes.filter(({ classroom }) =>
+        `${classroom.maLop} ${classroom.tenLop}`.toLocaleLowerCase("vi").includes(normalizedGlobalQuery),
+      ).slice(0, 5)
+    : [];
+  const matchingStudents = authUser.loaiNguoiDung === "GIAO_VIEN" && normalizedGlobalQuery
+    ? learningData.students.flatMap((student) => learningData.classes
+        .filter(({ classroom }) => classroom.hocSinh.some((member) => member.id === student.id))
+        .map(({ classroom }) => ({ student, classroom })))
+        .filter(({ student }) => `${student.maSinhVien ?? ""} ${student.hoTen}`.toLocaleLowerCase("vi").includes(normalizedGlobalQuery))
+        .slice(0, 5)
+    : [];
+
+  function openClass(classId: number, studentId?: number, assignmentId?: number) {
+    setClassTarget({ classId, studentId, assignmentId });
+    setActiveNav("Lớp học");
+    setGlobalQuery("");
+    setShowSearchResults(false);
+    setShowNotifications(false);
+  }
 
   const userInitials = authUser.hoTen
     .trim()
@@ -157,7 +262,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         </a>
         <div className="club-switcher">
           <span className="club-avatar">F</span>
-          <span className="club-copy"><strong>Form Fitness</strong><small>Nguyễn Huệ, TP.HCM</small></span>
+          <span className="club-copy"><strong>DH Thủy Lợi</strong><small>Hà Nội</small></span>
           <Icon name="chevron" size={16} className="switch-chevron" />
         </div>
 
@@ -178,7 +283,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                 >
                   <Icon name={item.icon} size={19} />
                   <span>{item.label}</span>
-                  {item.label === "Lớp học" && <span className="nav-count">{schoolClasses.length}</span>}
                 </button>
               ))}
             </div>
@@ -186,12 +290,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         </nav>
 
         <div className="sidebar-bottom">
-          <div className="help-card">
-            <div className="help-icon"><Icon name="dumbbell" size={18} /></div>
-            <strong>Cần hỗ trợ?</strong>
-            <p>Đội ngũ Formclub luôn sẵn sàng giúp bạn.</p>
-            <button onClick={() => notify("Đội ngũ hỗ trợ sẽ liên hệ với bạn sớm nhất!")}>Liên hệ hỗ trợ <Icon name="arrow" size={14} /></button>
-          </div>
           <button className="profile-button" onClick={() => setActiveNav("Cài đặt")}>
             <span className="profile-avatar">{userInitials}</span>
             <span className="profile-copy"><strong>{authUser.hoTen}</strong><small>{userRole}</small></span>
@@ -203,18 +301,41 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       <section className="main-panel">
         <header className="topbar">
           <button className="mobile-menu-button" aria-label="Mở menu" onClick={() => setMobileNavOpen(true)}><Icon name="menu" /></button>
-          <div className="breadcrumbs"><span>Form Fitness</span><Icon name="chevron" size={14} /><strong>{activeNav}</strong></div>
+          <div className="breadcrumbs"><span>DH Thủy Lợi</span><Icon name="chevron" size={14} /><strong>{activeNav}</strong></div>
           <div className="topbar-actions">
-            <label className="global-search">
-              <Icon name="search" size={17} />
-              <input aria-label="Tìm kiếm toàn trang" placeholder="Tìm kiếm..." onChange={(event) => setQuery(event.target.value)} />
-              <kbd>⌘ K</kbd>
-            </label>
+            <div className={`global-search-wrap${showSearchResults ? " global-search-open" : ""}`}>
+              <label className="global-search" onClick={() => {
+                if (window.matchMedia("(max-width: 680px)").matches) {
+                  setShowSearchResults(true);
+                  window.requestAnimationFrame(() => globalSearchInput.current?.focus());
+                }
+              }}>
+                <Icon name="search" size={17} />
+                <input ref={globalSearchInput} aria-label="Tìm theo mã lớp hoặc mã sinh viên" placeholder="Mã lớp, mã sinh viên..." value={globalQuery} onFocus={() => setShowSearchResults(true)} onBlur={() => window.setTimeout(() => setShowSearchResults(false), 150)} onChange={(event) => { setGlobalQuery(event.target.value); setShowSearchResults(true); }} />
+                <kbd>⌘ K</kbd>
+              </label>
+              {showSearchResults && normalizedGlobalQuery && (
+                <div className="global-search-results">
+                  {matchingClasses.map(({ classroom }) => <button key={`class-${classroom.id}`} onClick={() => openClass(classroom.id)}><span className="search-result-icon"><Icon name="calendar" size={15} /></span><span><strong>{classroom.maLop}</strong><small>{classroom.tenLop} · Lớp học</small></span></button>)}
+                  {matchingStudents.map(({ student, classroom }) => <button key={`student-${student.id}-${classroom.id}`} onClick={() => openClass(classroom.id, student.id)}><span className="search-result-icon search-result-student"><Icon name="users" size={15} /></span><span><strong>{student.maSinhVien} · {student.hoTen}</strong><small>Mở lớp {classroom.maLop}</small></span></button>)}
+                  {matchingClasses.length === 0 && matchingStudents.length === 0 && <p>Không tìm thấy lớp hoặc học sinh phù hợp.</p>}
+                </div>
+              )}
+            </div>
             <div className="notification-wrap">
-              <button className="icon-button notification-button" aria-label="Thông báo" onClick={() => setShowNotifications(!showNotifications)}>
-                <Icon name="bell" size={19} /><span className="notification-dot" />
+              <button className="icon-button notification-button" aria-label="Thông báo" onClick={() => {
+                const nextOpen = !showNotifications;
+                setShowNotifications(nextOpen);
+                setShowSearchResults(false);
+                if (nextOpen) void learningData.refresh().catch((error: unknown) => notify(error instanceof Error ? error.message : "Không tải được thông báo."));
+              }}>
+                <Icon name="bell" size={19} />{notifications.length > 0 && <span className="notification-dot" />}
               </button>
-              {showNotifications && <div className="notification-popover"><strong>Thông báo</strong><p>Bạn có 3 hội viên mới trong tuần này.</p><p>Lớp Yoga Flow còn 2 chỗ trống.</p></div>}
+              {showNotifications && <div className="notification-popover">
+                <div className="notification-heading"><strong>Thông báo</strong><span>{notifications.length}</span></div>
+                {learningData.error && <p className="notification-error">{learningData.error}</p>}
+                {notifications.length ? notifications.map((notification) => <button className="notification-item" key={notification.id} onClick={() => openClass(notification.classId, undefined, notification.assignmentId)}><span className="notification-item-dot" /><span><strong>{notification.message}</strong><small>{notification.detail}</small><time>{relativeTime(notification.date)}</time></span></button>) : !learningData.error && <p className="notification-empty">{learningData.loading ? "Đang tải thông báo..." : "Chưa có hoạt động mới trong 14 ngày qua."}</p>}
+              </div>}
             </div>
             <span className="topbar-divider" />
             <button className="topbar-user" onClick={() => setActiveNav("Cài đặt")}><span className="profile-avatar">{userInitials}</span><span>{authUser.hoTen}</span><Icon name="chevron" size={14} /></button>
@@ -240,11 +361,11 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         <div className="page-content">
           <div className="page-heading">
             <div>
-              <div className="eyebrow"><span className="live-dot" /> THỨ BẢY, 17 THÁNG 10, 2026</div>
-              <h1>{activeNav === "Tổng quan" ? "Chào buổi sáng, Thảo 👋" : activeNav}</h1>
+              <div className="eyebrow"><span className="live-dot" /> {new Date().toLocaleDateString("vi-VN", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).toLocaleUpperCase("vi")}</div>
+              <h1>{activeNav === "Tổng quan" ? `Xin chào, ${authUser.hoTen} 👋` : activeNav}</h1>
               <p>{sectionDescriptions[activeNav]}</p>
             </div>
-            {activeNav !== "Người dùng" && activeNav !== "Lớp học" && (
+            {activeNav !== "Người dùng" && activeNav !== "Lớp học" && activeNav !== "Tổng quan" && (
               <div className="heading-actions">
                 <button className="button button-secondary" onClick={exportMembers}><Icon name="download" size={17} /> Xuất báo cáo</button>
                 <button className="button button-primary" onClick={() => setModalOpen(true)}><Icon name="plus" size={18} /> Thêm hội viên</button>
@@ -255,7 +376,9 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           {activeNav === "Người dùng" ? (
             <UsersManagement query={query} setQuery={setQuery} notify={notify} operatorUserId={authUser.id} />
           ) : activeNav === "Lớp học" ? (
-            <ClassesManagement schoolClasses={schoolClasses} setSchoolClasses={setSchoolClasses} students={students} assignments={assignments} setAssignments={setAssignments} query={query} setQuery={setQuery} notify={notify} />
+            <ClassesManagement role={authUser.loaiNguoiDung} notify={notify} target={classTarget} onTargetHandled={handleClassTargetHandled} />
+          ) : activeNav === "Tổng quan" ? (
+            <LearningOverview role={authUser.loaiNguoiDung} classes={learningData.classes} loading={learningData.loading} error={learningData.error} onOpenClass={(classId, assignmentId) => openClass(classId, undefined, assignmentId)} />
           ) : (
             <>
           <section className="stats-grid" aria-label="Thống kê tổng quan">
