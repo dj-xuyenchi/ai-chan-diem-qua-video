@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.springframework.web.multipart.MultipartFile;
 
+import com.theduc.ai.dto.ReferenceAnalysisResponse;
 import com.theduc.ai.dto.BaiTapVideoResponse;
 import com.theduc.ai.dto.AiDanhGiaResponse;
 import com.theduc.ai.dto.LopHocResponse;
@@ -23,9 +24,12 @@ public interface LopHocService {
 
 	List<BaiTapVideoResponse> layBaiTap(Long lopHocId, Long nguoiDungId, String loaiNguoiDung);
 
+	ReferenceAnalysisResponse phanTichVideoMau(
+			Long lopHocId, int soDongTac, MultipartFile video, Long giaoVienId) throws IOException;
+
 	BaiTapVideoResponse taoBaiTap(
-			Long lopHocId, String tieuDe, String huongDan, String hanNop,
-			MultipartFile video, Long giaoVienId) throws IOException;
+			Long lopHocId, String tieuDe, String huongDan, String hanNop, int soDongTac, int aiNguongDatPercent,
+			String dongTacMauJson, MultipartFile video, Long giaoVienId) throws IOException;
 
 	BaiTapVideoResponse nopBai(Long lopHocId, Long baiTapId, MultipartFile video, Long hocSinhId)
 			throws IOException;

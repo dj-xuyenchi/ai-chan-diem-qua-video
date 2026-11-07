@@ -21,6 +21,8 @@ spring:
       max-request-size: 102MB
 
 server:
+  error:
+    include-message: always
   servlet:
     session:
       timeout: 30m

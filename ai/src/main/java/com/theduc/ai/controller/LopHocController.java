@@ -29,6 +29,7 @@ import com.theduc.ai.dto.BaiTapVideoResponse;
 import com.theduc.ai.dto.AiDanhGiaResponse;
 import com.theduc.ai.dto.ChamDiemRequest;
 import com.theduc.ai.dto.LopHocResponse;
+import com.theduc.ai.dto.ReferenceAnalysisResponse;
 import com.theduc.ai.dto.TaoLopHocRequest;
 import com.theduc.ai.dto.ThemHocSinhRequest;
 import com.theduc.ai.service.LopHocService;
@@ -97,16 +98,31 @@ public class LopHocController {
 		return lopHocService.layBaiTap(lopHocId, userId(session), userRole(session));
 	}
 
+	@PostMapping(
+			path = "/{lopHocId}/bai-tap/phan-tich-video",
+			consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+	public ReferenceAnalysisResponse phanTichVideoMau(
+			@PathVariable Long lopHocId,
+			@RequestParam int soDongTac,
+			@RequestParam MultipartFile video,
+			HttpServletRequest request) throws IOException {
+		return lopHocService.phanTichVideoMau(lopHocId, soDongTac, video, giaoVienId(request));
+	}
+
 	@PostMapping(path = "/{lopHocId}/bai-tap", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
 	public ResponseEntity<BaiTapVideoResponse> taoBaiTap(
 			@PathVariable Long lopHocId,
 			@RequestParam String tieuDe,
 			@RequestParam(required = false) String huongDan,
 			@RequestParam(required = false) String hanNop,
+			@RequestParam int soDongTac,
+			@RequestParam(defaultValue = "70") int aiNguongDatPercent,
+			@RequestParam String dongTacMauJson,
 			@RequestParam MultipartFile video,
 			HttpServletRequest request) throws IOException {
 		BaiTapVideoResponse response = lopHocService.taoBaiTap(
-				lopHocId, tieuDe, huongDan, hanNop, video, giaoVienId(request));
+				lopHocId, tieuDe, huongDan, hanNop, soDongTac, aiNguongDatPercent,
+				dongTacMauJson, video, giaoVienId(request));
 		return ResponseEntity.status(HttpStatus.CREATED).body(response);
 	}
 

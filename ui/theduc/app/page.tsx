@@ -6,6 +6,7 @@ import { Icon } from "./component/Icon";
 import { UsersManagement } from "./component/UsersManagement";
 import { ClassesManagement } from "./component/ClassesManagement";
 import { LearningOverview } from "./component/LearningOverview";
+import { ProfileOverview } from "./component/ProfileOverview";
 import { ForcePasswordChangeScreen, LoginScreen } from "./component/AuthScreens";
 import { changePassword, getCurrentUser, login, logout } from "./api/authApi";
 import type { AuthUser } from "./domain/AuthUser";
@@ -290,7 +291,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         </nav>
 
         <div className="sidebar-bottom">
-          <button className="profile-button" onClick={() => setActiveNav("Cài đặt")}>
+          <button className="profile-button" aria-label="Mở hồ sơ cá nhân" onClick={() => setActiveNav("Hồ sơ cá nhân")}>
             <span className="profile-avatar">{userInitials}</span>
             <span className="profile-copy"><strong>{authUser.hoTen}</strong><small>{userRole}</small></span>
             <Icon name="more" size={18} />
@@ -338,7 +339,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
               </div>}
             </div>
             <span className="topbar-divider" />
-            <button className="topbar-user" onClick={() => setActiveNav("Cài đặt")}><span className="profile-avatar">{userInitials}</span><span>{authUser.hoTen}</span><Icon name="chevron" size={14} /></button>
+            <button className="topbar-user" aria-label={`Mở hồ sơ của ${authUser.hoTen}`} onClick={() => setActiveNav("Hồ sơ cá nhân")}><span className="profile-avatar">{userInitials}</span><span>{authUser.hoTen}</span><Icon name="chevron" size={14} /></button>
             <button
               className="sign-out-button"
               disabled={loggingOut}
@@ -365,7 +366,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
               <h1>{activeNav === "Tổng quan" ? `Xin chào, ${authUser.hoTen} 👋` : activeNav}</h1>
               <p>{sectionDescriptions[activeNav]}</p>
             </div>
-            {activeNav !== "Người dùng" && activeNav !== "Lớp học" && activeNav !== "Tổng quan" && (
+            {activeNav !== "Người dùng" && activeNav !== "Lớp học" && activeNav !== "Tổng quan" && activeNav !== "Hồ sơ cá nhân" && (
               <div className="heading-actions">
                 <button className="button button-secondary" onClick={exportMembers}><Icon name="download" size={17} /> Xuất báo cáo</button>
                 <button className="button button-primary" onClick={() => setModalOpen(true)}><Icon name="plus" size={18} /> Thêm hội viên</button>
@@ -379,6 +380,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             <ClassesManagement role={authUser.loaiNguoiDung} notify={notify} target={classTarget} onTargetHandled={handleClassTargetHandled} />
           ) : activeNav === "Tổng quan" ? (
             <LearningOverview role={authUser.loaiNguoiDung} classes={learningData.classes} loading={learningData.loading} error={learningData.error} onOpenClass={(classId, assignmentId) => openClass(classId, undefined, assignmentId)} />
+          ) : activeNav === "Hồ sơ cá nhân" ? (
+            <ProfileOverview user={authUser} onOpenOverview={() => setActiveNav("Tổng quan")} />
           ) : (
             <>
           <section className="stats-grid" aria-label="Thống kê tổng quan">

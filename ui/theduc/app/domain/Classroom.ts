@@ -35,13 +35,41 @@ export type VideoSubmission = {
 
 export type AiVideoEvaluation = {
   similarityPercent: number;
-  speedDifferencePercent: number;
-  speedAssessment: "SLOWER" | "FASTER" | "SIMILAR";
   suggestedScore: number;
   confidencePercent: number;
-  referenceMovementSeconds: number;
-  submissionMovementSeconds: number;
   scoreBreakdown: string;
+  movementCount: number;
+  correctMovementCount: number;
+  incorrectMovementCount: number;
+  pointsPerMovement: number;
+  movements: MovementScore[];
+};
+
+export type ReferenceMovement = {
+  movementNumber: number;
+  startSeconds: number;
+  endSeconds: number;
+  durationSeconds: number;
+  focus: string;
+};
+
+export type ReferenceAnalysis = {
+  movementCount: number;
+  movements: ReferenceMovement[];
+  explanation: string;
+  confidencePercent: number;
+  durationSeconds: number;
+};
+
+export type MovementScore = {
+  movementNumber: number;
+  passed: boolean;
+  similarityPercent: number;
+  pointsAwarded: number;
+  maxPoints: number;
+  passThresholdPercent: number | null;
+  focus: string;
+  explanation: string;
 };
 
 export type VideoAssignment = {
@@ -55,5 +83,8 @@ export type VideoAssignment = {
   ngayTao: string;
   giaoVienId: number;
   tenGiaoVien: string;
+  aiDongTacMau: ReferenceMovement[] | null;
+  aiMoTaDongTacMau: string | null;
+  aiNguongDatPercent: number;
   baiNop: VideoSubmission[];
 };

@@ -20,5 +20,8 @@ public class BaiTapVideoResponse {
 	private LocalDateTime ngayTao;
 	private Long giaoVienId;
 	private String tenGiaoVien;
+	private List<ReferenceMovementResponse> aiDongTacMau;
+	private String aiMoTaDongTacMau;
+	private Integer aiNguongDatPercent;
 	private List<BaiNopVideoResponse> baiNop;
 }

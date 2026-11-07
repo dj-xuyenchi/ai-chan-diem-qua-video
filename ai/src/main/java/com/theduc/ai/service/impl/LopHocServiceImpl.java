@@ -5,9 +5,13 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.server.ResponseStatusException;
 
 import lombok.RequiredArgsConstructor;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -22,6 +26,9 @@ import com.theduc.ai.dto.BaiNopVideoResponse;
 import com.theduc.ai.dto.BaiTapVideoResponse;
 import com.theduc.ai.dto.HocSinhLopResponse;
 import com.theduc.ai.dto.LopHocResponse;
+import com.theduc.ai.dto.MovementScoreResponse;
+import com.theduc.ai.dto.ReferenceAnalysisResponse;
+import com.theduc.ai.dto.ReferenceMovementResponse;
 import com.theduc.ai.entity.BaiNopVideo;
 import com.theduc.ai.entity.BaiTapVideo;
 import com.theduc.ai.entity.DanhGiaAiVideo;
@@ -46,14 +53,16 @@ public class LopHocServiceImpl implements LopHocService {
 	private static final System.Logger LOGGER = System.getLogger(LopHocServiceImpl.class.getName());
 	private static final String GIAO_VIEN = "GIAO_VIEN";
 	private static final String HOC_SINH = "HOC_SINH";
+    private static final Logger log = LoggerFactory.getLogger(LopHocServiceImpl.class);
 
-	private final LopHocRepository lopHocRepository;
+    private final LopHocRepository lopHocRepository;
 	private final ThanhVienLopRepository thanhVienLopRepository;
 	private final BaiTapVideoRepository baiTapVideoRepository;
 	private final BaiNopVideoRepository baiNopVideoRepository;
 	private final NguoiDungRepository nguoiDungRepository;
 	private final VideoStorageService videoStorageService;
 	private final AiVideoScoringService aiVideoScoringService;
+	private final ObjectMapper objectMapper;
 
 	@Value("${app.video.max-file-size-bytes:104857600}")
 	private long maxFileSizeBytes;
@@ -145,19 +154,46 @@ public class LopHocServiceImpl implements LopHocService {
 	}
 
 	@Override
+	public ReferenceAnalysisResponse phanTichVideoMau(
+			Long lopHocId, int soDongTac, MultipartFile video, Long giaoVienId) throws IOException {
+		layLopCuaGiaoVien(lopHocId, giaoVienId);
+		kiemTraSoDongTac(soDongTac);
+		kiemTraVideo(video);
+		String videoPath = videoStorageService.store(video);
+		try {
+			return aiVideoScoringService.analyzeReference(videoPath, soDongTac, null);
+		} finally {
+			xoaVideoTam(videoPath);
+		}
+	}
+
+	@Override
 	public BaiTapVideoResponse taoBaiTap(
 			Long lopHocId,
 			String tieuDe,
 			String huongDan,
 			String hanNop,
+			int soDongTac,
+			int aiNguongDatPercent,
+			String dongTacMauJson,
 			MultipartFile video,
 			Long giaoVienId) throws IOException {
 		LopHoc lopHoc = layLopCuaGiaoVien(lopHocId, giaoVienId);
 		kiemTraTieuDe(tieuDe);
+		kiemTraSoDongTac(soDongTac);
+		kiemTraNguongDat(aiNguongDatPercent);
+		List<ReferenceMovementResponse> dongTacMau = parseDongTacMau(dongTacMauJson, soDongTac);
 		kiemTraVideo(video);
 		LocalDateTime deadline = parseDeadline(hanNop);
 		String videoPath = videoStorageService.store(video);
 		try {
+			ReferenceAnalysisResponse referenceAnalysis =
+					aiVideoScoringService.analyzeReference(videoPath, soDongTac, dongTacMau);
+			if (referenceAnalysis.movementCount() != soDongTac
+					|| referenceAnalysis.movements() == null
+					|| referenceAnalysis.movements().size() != soDongTac) {
+				throw badRequest("Số đoạn video mẫu không trùng với số động tác đã chọn");
+			}
 			BaiTapVideo baiTap = new BaiTapVideo();
 			baiTap.setLopHocId(lopHoc.getId());
 			baiTap.setTieuDe(tieuDe.trim());
@@ -168,11 +204,66 @@ public class LopHocServiceImpl implements LopHocService {
 			baiTap.setLoaiVideo(video.getContentType());
 			baiTap.setKichThuocVideo(video.getSize());
 			baiTap.setGiaoVienId(giaoVienId);
+			baiTap.setAiNguongDatPercent(aiNguongDatPercent);
+			baiTap.setAiDongTacMauJson(serialize(referenceAnalysis.movements()));
+			baiTap.setAiMoTaDongTacMau(referenceAnalysis.explanation());
 			BaiTapVideo saved = baiTapVideoRepository.saveAndFlush(baiTap);
 			return toBaiTapResponse(saved, List.of(), giaoVienId);
 		} catch (RuntimeException exception) {
+            exception.printStackTrace();
 			videoStorageService.delete(videoPath);
 			throw exception;
+		}
+	}
+
+	private List<ReferenceMovementResponse> parseDongTacMau(String dongTacMauJson, int soDongTac) {
+		if (dongTacMauJson == null || dongTacMauJson.isBlank()) {
+			throw badRequest("Vui lòng phân tích và xác nhận các đoạn động tác trước khi tạo bài tập");
+		}
+		try {
+			List<ReferenceMovementResponse> movements = objectMapper.readValue(
+					dongTacMauJson, new TypeReference<List<ReferenceMovementResponse>>() {});
+			if (movements == null || movements.size() != soDongTac) {
+				throw badRequest("Số đoạn đã xác nhận không trùng với số động tác đã chọn");
+			}
+			double previousEnd = 0.0;
+			for (int index = 0; index < movements.size(); index++) {
+				ReferenceMovementResponse movement = movements.get(index);
+				if (movement.movementNumber() != index + 1
+						|| !Double.isFinite(movement.startSeconds())
+						|| !Double.isFinite(movement.endSeconds())
+						|| movement.startSeconds() < previousEnd
+						|| movement.endSeconds() - movement.startSeconds() < 0.5) {
+					throw badRequest("Thời gian các đoạn động tác không hợp lệ hoặc bị chồng lấn");
+				}
+				previousEnd = movement.endSeconds();
+			}
+			return movements;
+		} catch (RuntimeException exception) {
+			if (exception instanceof ResponseStatusException responseStatusException) {
+				throw responseStatusException;
+			}
+			throw badRequest("Danh sách các đoạn động tác không hợp lệ");
+		}
+	}
+
+	private void kiemTraSoDongTac(int soDongTac) {
+		if (soDongTac < 5 || soDongTac > 6) {
+			throw badRequest("Số động tác phải là 5 hoặc 6");
+		}
+	}
+
+	private void kiemTraNguongDat(int nguongDatPercent) {
+		if (!List.of(50, 60, 70).contains(nguongDatPercent)) {
+			throw badRequest("Ngưỡng đạt phải là 50%, 60% hoặc 70%");
+		}
+	}
+
+	private void xoaVideoTam(String videoPath) {
+		try {
+			videoStorageService.delete(videoPath);
+		} catch (IOException exception) {
+			LOGGER.log(System.Logger.Level.WARNING, "Không xóa được video tạm sau phân tích AI", exception);
 		}
 	}
 
@@ -208,8 +299,12 @@ public class LopHocServiceImpl implements LopHocService {
 				videoStorageService.delete(previousPath);
 			}
 			try {
-				baiNop.setDanhGiaAi(DanhGiaAiVideo.from(
-						aiVideoScoringService.evaluate(baiTap.getVideoPath(), baiNop.getVideoPath())));
+				AiDanhGiaResponse evaluation = aiVideoScoringService.evaluate(
+						baiTap.getVideoPath(),
+						baiNop.getVideoPath(),
+						referenceMovements(baiTap),
+						nguongDatPercent(baiTap));
+				baiNop.setDanhGiaAi(DanhGiaAiVideo.from(evaluation, serialize(evaluation.movements())));
 				baiNop.setTrangThaiAi("DA_DANH_GIA");
 			} catch (ResponseStatusException exception) {
 				baiNop.setTrangThaiAi("LOI");
@@ -270,8 +365,10 @@ public class LopHocServiceImpl implements LopHocService {
 			throw notFound("Không tìm thấy bài nộp trong bài tập này");
 		}
 		AiDanhGiaResponse evaluation =
-				aiVideoScoringService.evaluate(baiTap.getVideoPath(), baiNop.getVideoPath());
-		baiNop.setDanhGiaAi(DanhGiaAiVideo.from(evaluation));
+				aiVideoScoringService.evaluate(
+						baiTap.getVideoPath(), baiNop.getVideoPath(),
+						referenceMovements(baiTap), nguongDatPercent(baiTap));
+		baiNop.setDanhGiaAi(DanhGiaAiVideo.from(evaluation, serialize(evaluation.movements())));
 		baiNop.setTrangThaiAi("DA_DANH_GIA");
 		baiNop.setLoiDanhGiaAi(null);
 		baiNopVideoRepository.save(baiNop);
@@ -351,8 +448,15 @@ public class LopHocServiceImpl implements LopHocService {
 				.ngayTao(baiTap.getNgayTao())
 				.giaoVienId(baiTap.getGiaoVienId())
 				.tenGiaoVien(giaoVien.getHoTen())
+				.aiDongTacMau(referenceMovements(baiTap))
+				.aiMoTaDongTacMau(baiTap.getAiMoTaDongTacMau())
+				.aiNguongDatPercent(nguongDatPercent(baiTap))
 				.baiNop(submissions)
 				.build();
+	}
+
+	private int nguongDatPercent(BaiTapVideo baiTap) {
+		return baiTap.getAiNguongDatPercent() == null ? 70 : baiTap.getAiNguongDatPercent();
 	}
 
 	private BaiNopVideoResponse toBaiNopResponse(BaiNopVideo baiNop, Long currentUserId) {
@@ -370,10 +474,45 @@ public class LopHocServiceImpl implements LopHocService {
 				.diem(baiNop.getDiem())
 				.nhanXet(baiNop.getNhanXet())
 				.baiCuaToi(baiNop.getHocSinhId().equals(currentUserId))
-				.aiDanhGia(baiNop.getDanhGiaAi() == null ? null : baiNop.getDanhGiaAi().toResponse())
+				.aiDanhGia(baiNop.getDanhGiaAi() == null ? null : aiEvaluationResponse(baiNop.getDanhGiaAi()))
 				.trangThaiAi(baiNop.getTrangThaiAi())
 				.loiDanhGiaAi(baiNop.getLoiDanhGiaAi())
 				.build();
+	}
+
+	private List<ReferenceMovementResponse> referenceMovements(BaiTapVideo baiTap) {
+		if (baiTap.getAiDongTacMauJson() == null || baiTap.getAiDongTacMauJson().isBlank()) {
+			return List.of();
+		}
+		try {
+			return objectMapper.readValue(
+					baiTap.getAiDongTacMauJson(),
+					new TypeReference<List<ReferenceMovementResponse>>() {});
+		} catch (RuntimeException exception) {
+			throw new IllegalStateException("Không đọc được cấu hình động tác AI đã lưu", exception);
+		}
+	}
+
+	private String serialize(Object value) {
+		try {
+			return objectMapper.writeValueAsString(value);
+		} catch (RuntimeException exception) {
+			throw new IllegalStateException("Không thể lưu dữ liệu phân tích động tác AI", exception);
+		}
+	}
+
+	private AiDanhGiaResponse aiEvaluationResponse(DanhGiaAiVideo evaluation) {
+		List<MovementScoreResponse> movements = List.of();
+		if (evaluation.getMovementDetailsJson() != null && !evaluation.getMovementDetailsJson().isBlank()) {
+			try {
+				movements = objectMapper.readValue(
+						evaluation.getMovementDetailsJson(),
+						new TypeReference<List<MovementScoreResponse>>() {});
+			} catch (RuntimeException exception) {
+				throw new IllegalStateException("Không đọc được chi tiết đánh giá động tác AI đã lưu", exception);
+			}
+		}
+		return evaluation.toResponse(movements);
 	}
 
 	private HocSinhLopResponse toHocSinhLopResponse(

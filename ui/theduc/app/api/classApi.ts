@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../config/api";
-import type { AiVideoEvaluation, Classroom, VideoAssignment } from "../domain/Classroom";
+import type { AiVideoEvaluation, Classroom, ReferenceAnalysis, ReferenceMovement, VideoAssignment } from "../domain/Classroom";
 import { apiRequest } from "./apiRequest";
 
 const endpoint = `${API_BASE_URL}/lop-hoc`;
@@ -31,14 +31,34 @@ export function getAssignments(classId: number) {
   return apiRequest<VideoAssignment[]>(`${endpoint}/${classId}/bai-tap`);
 }
 
+export function analyzeAssignmentVideo(classId: number, movementCount: number, video: File) {
+  const formData = new FormData();
+  formData.set("soDongTac", String(movementCount));
+  formData.set("video", video);
+  return apiRequest<ReferenceAnalysis>(`${endpoint}/${classId}/bai-tap/phan-tich-video`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
 export function createAssignment(
   classId: number,
-  data: { tieuDe: string; huongDan: string; hanNop: string; video: File },
+  data: {
+    tieuDe: string;
+    huongDan: string;
+    hanNop: string;
+    soDongTac: number;
+    dongTacMau: ReferenceMovement[];
+    video: File;
+  },
 ) {
   const formData = new FormData();
   formData.set("tieuDe", data.tieuDe);
   formData.set("huongDan", data.huongDan);
   if (data.hanNop) formData.set("hanNop", data.hanNop);
+  formData.set("soDongTac", String(data.soDongTac));
+  formData.set("aiNguongDatPercent", "70");
+  formData.set("dongTacMauJson", JSON.stringify(data.dongTacMau));
   formData.set("video", data.video);
   return apiRequest<VideoAssignment>(`${endpoint}/${classId}/bai-tap`, {
     method: "POST",

@@ -52,6 +52,15 @@ public class BaiTapVideo {
 	@Column(name = "giao_vien_id", nullable = false)
 	private Long giaoVienId;
 
+	@Column(name = "ai_dong_tac_mau", columnDefinition = "text")
+	private String aiDongTacMauJson;
+
+	@Column(name = "ai_mo_ta_dong_tac_mau", columnDefinition = "text")
+	private String aiMoTaDongTacMau;
+
+	@Column(name = "ai_nguong_dat_percent")
+	private Integer aiNguongDatPercent = 70;
+
 	@Column(name = "ngay_tao", nullable = false, updatable = false)
 	private LocalDateTime ngayTao;
 

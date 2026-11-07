@@ -36,6 +36,7 @@ export  const sectionDescriptions: Record<string, string> = {
   "Thanh toán": "Theo dõi doanh thu và các giao dịch gần đây.",
   "Báo cáo": "Phân tích hiệu suất phòng tập theo thời gian.",
   "Cài đặt": "Tùy chỉnh thông tin và thiết lập phòng tập.",
+  "Hồ sơ cá nhân": "Thông tin tài khoản và trạng thái bảo mật của bạn.",
 };
 
 

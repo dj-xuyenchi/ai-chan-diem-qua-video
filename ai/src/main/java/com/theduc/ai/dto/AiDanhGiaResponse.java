@@ -1,12 +1,15 @@
 package com.theduc.ai.dto;
 
+import java.util.List;
+
 public record AiDanhGiaResponse(
 		double similarityPercent,
-		double speedDifferencePercent,
-		String speedAssessment,
 		double suggestedScore,
 		double confidencePercent,
-		double referenceMovementSeconds,
-		double submissionMovementSeconds,
-		String scoreBreakdown) {
+		String scoreBreakdown,
+		int movementCount,
+		int correctMovementCount,
+		int incorrectMovementCount,
+		double pointsPerMovement,
+		List<MovementScoreResponse> movements) {
 }

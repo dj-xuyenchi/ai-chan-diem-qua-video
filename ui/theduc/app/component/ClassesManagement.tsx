@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   addClassroomStudents,
+  analyzeAssignmentVideo,
   createAssignment,
   createClassroom,
   evaluateSubmission,
@@ -16,7 +17,7 @@ import {
 } from "../api/classApi";
 import { getUsers } from "../api/userApi";
 import { API_BASE_URL } from "../config/api";
-import type { AiVideoEvaluation, Classroom, ClassroomMember, VideoAssignment, VideoSubmission } from "../domain/Classroom";
+import type { AiVideoEvaluation, Classroom, ClassroomMember, ReferenceAnalysis, ReferenceMovement, VideoAssignment, VideoSubmission } from "../domain/Classroom";
 import type { UserKind, UserRecord } from "../domain/User";
 import { formatDate } from "../utils/date";
 import { Icon } from "./Icon";
@@ -43,6 +44,40 @@ function formatDuration(seconds: number) {
   return minutes ? `${minutes} phút ${remainder} giây` : `${remainder} giây`;
 }
 
+function formatVideoTime(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function ButtonSpinner() {
+  return <span className="button-spinner" aria-hidden="true" />;
+}
+
+function MovementEvaluationDetails({ evaluation }: { evaluation: AiVideoEvaluation }) {
+  return (
+    <section className="movement-evaluation-details" aria-label="Kết quả chấm theo từng động tác">
+      <div className="movement-evaluation-summary">
+        <strong>{evaluation.correctMovementCount}/{evaluation.movementCount} động tác đạt</strong>
+        <span>{evaluation.incorrectMovementCount} chưa đạt · {evaluation.pointsPerMovement.toFixed(2)} điểm mỗi động tác</span>
+      </div>
+      <ol className="movement-evaluation-list">
+        {evaluation.movements.map((movement) => (
+          <li className={movement.passed ? "movement-evaluation-passed" : "movement-evaluation-failed"} key={movement.movementNumber}>
+            <div className="movement-evaluation-heading">
+              <strong>Động tác {movement.movementNumber} · {movement.focus}</strong>
+              <span>{movement.pointsAwarded.toFixed(2)}/{movement.maxPoints.toFixed(2)} điểm</span>
+            </div>
+            <p>{movement.explanation}</p>
+            <small>Độ tương đồng {movement.similarityPercent}% · ngưỡng đạt {movement.passThresholdPercent ?? 70}%</small>
+          </li>
+        ))}
+      </ol>
+      <p className="movement-scoring-rule">{evaluation.scoreBreakdown}</p>
+    </section>
+  );
+}
+
 function videoSource(path: string) {
   return new URL(path, API_BASE_URL).toString();
 }
@@ -53,13 +88,6 @@ function errorMessage(error: unknown) {
 
 function loadClassData(classId: number) {
   return Promise.all([getClassroom(classId), getAssignments(classId)]);
-}
-
-function speedAssessmentLabel(value: AiVideoEvaluation["speedAssessment"] | undefined) {
-  if (value === "SLOWER") return "Chậm hơn bài mẫu";
-  if (value === "FASTER") return "Nhanh hơn bài mẫu";
-  if (value === "SIMILAR") return "Tương tự bài mẫu";
-  return "";
 }
 
 export function ClassesManagement({ role, notify, target, onTargetHandled }: ClassesManagementProps) {
@@ -77,6 +105,8 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
   const [students, setStudents] = useState<UserRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [openingClassId, setOpeningClassId] = useState<number | null>(null);
   const [exportingResults, setExportingResults] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -86,6 +116,12 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
   const [classModalOpen, setClassModalOpen] = useState(false);
   const [studentModalOpen, setStudentModalOpen] = useState(false);
   const [assignmentModalOpen, setAssignmentModalOpen] = useState(false);
+  const [referenceAnalysis, setReferenceAnalysis] = useState<ReferenceAnalysis | null>(null);
+  const [referenceBoundaryDrafts, setReferenceBoundaryDrafts] = useState<Record<string, string>>({});
+  const [referenceVideo, setReferenceVideo] = useState<File | null>(null);
+  const [referenceVideoUrl, setReferenceVideoUrl] = useState("");
+  const referenceVideoElement = useRef<HTMLVideoElement>(null);
+  const referenceVideoUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -119,6 +155,10 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
     };
   }, [isTeacher]);
 
+  useEffect(() => () => {
+    if (referenceVideoUrlRef.current) URL.revokeObjectURL(referenceVideoUrlRef.current);
+  }, []);
+
   const visibleClassrooms = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("vi");
     return classrooms.filter((classroom) =>
@@ -139,6 +179,8 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
     focusStudentId?: number,
     assignmentId?: number,
   ) => {
+    if (openingClassId !== null) return;
+    setOpeningClassId(classroom.id);
     try {
       const [details, loadedAssignments] = await loadClassData(classroom.id);
       setError("");
@@ -152,8 +194,10 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       setAssignments(loadedAssignments);
     } catch (cause) {
       setError(errorMessage(cause));
+    } finally {
+      setOpeningClassId(null);
     }
-  }, []);
+  }, [openingClassId]);
 
   useEffect(() => {
     if (!target || !classrooms.length) return;
@@ -201,6 +245,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
     if (saving) return;
     const form = new FormData(event.currentTarget);
     setSaving(true);
+    setBusyAction("create-class");
     try {
       const classroom = await createClassroom({
         maLop: String(form.get("maLop") ?? "").trim(),
@@ -213,6 +258,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       setError(errorMessage(cause));
     } finally {
       setSaving(false);
+      setBusyAction(null);
     }
   }
 
@@ -226,6 +272,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       return;
     }
     setSaving(true);
+    setBusyAction("add-students");
     setError("");
     try {
       const classroom = await addClassroomStudents(selectedClass.id, hocSinhIds);
@@ -237,12 +284,14 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       setError(errorMessage(cause));
     } finally {
       setSaving(false);
+      setBusyAction(null);
     }
   }
 
   async function removeStudent(student: ClassroomMember) {
     if (!selectedClass || saving) return;
     setSaving(true);
+    setBusyAction(`remove-student-${student.id}`);
     try {
       const classroom = await removeClassroomStudent(selectedClass.id, student.id);
       setSelectedClass(classroom);
@@ -252,7 +301,79 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       setError(errorMessage(cause));
     } finally {
       setSaving(false);
+      setBusyAction(null);
     }
+  }
+
+  function getConfirmedReferenceMovements(analysis: ReferenceAnalysis): ReferenceMovement[] {
+    return analysis.movements.map((movement, index) => {
+      const startDraft = referenceBoundaryDrafts[`${index}.startSeconds`];
+      const endDraft = referenceBoundaryDrafts[`${index}.endSeconds`];
+      const startSeconds = startDraft === undefined
+        ? movement.startSeconds
+        : startDraft.trim() ? Number(startDraft) : Number.NaN;
+      const endSeconds = endDraft === undefined
+        ? movement.endSeconds
+        : endDraft.trim() ? Number(endDraft) : Number.NaN;
+      return {
+        ...movement,
+        startSeconds,
+        endSeconds,
+        durationSeconds: endSeconds - startSeconds,
+      };
+    });
+  }
+
+  function referenceSegmentsValidationMessage(analysis: ReferenceAnalysis): string | null {
+    if (analysis.movements.length !== analysis.movementCount) {
+      return "Số đoạn AI đề xuất không khớp số động tác đã chọn.";
+    }
+    let previousEnd = 0;
+    const movements = getConfirmedReferenceMovements(analysis);
+    for (let index = 0; index < movements.length; index += 1) {
+      const movement = movements[index];
+      if (!Number.isFinite(movement.startSeconds) || !Number.isFinite(movement.endSeconds)) {
+        return `Động tác ${index + 1}: nhập thời gian bắt đầu và kết thúc hợp lệ.`;
+      }
+      if (movement.startSeconds < 0 || movement.endSeconds > analysis.durationSeconds) {
+        return `Động tác ${index + 1}: thời gian phải nằm trong video (0–${analysis.durationSeconds} giây).`;
+      }
+      if (movement.startSeconds < previousEnd) {
+        return `Động tác ${index + 1}: thời gian bắt đầu không được trước khi động tác ${index} kết thúc.`;
+      }
+      if (movement.endSeconds - movement.startSeconds < 0.5) {
+        return `Động tác ${index + 1}: đoạn phải dài ít nhất 0,5 giây.`;
+      }
+      previousEnd = movement.endSeconds;
+    }
+    return null;
+  }
+
+  function updateReferenceMovement(
+    index: number,
+    field: "startSeconds" | "endSeconds",
+    value: string,
+  ) {
+    setReferenceBoundaryDrafts((current) => ({
+      ...current,
+      [`${index}.${field}`]: value,
+    }));
+    setError("");
+  }
+
+  function setMovementBoundaryToPlaybackTime(index: number, field: "startSeconds" | "endSeconds") {
+    const currentTime = referenceVideoElement.current?.currentTime;
+    if (currentTime !== undefined && Number.isFinite(currentTime)) {
+      updateReferenceMovement(index, field, currentTime.toFixed(1));
+    }
+  }
+
+  function selectReferenceVideo(video: File | null) {
+    if (referenceVideoUrlRef.current) URL.revokeObjectURL(referenceVideoUrlRef.current);
+    const url = video ? URL.createObjectURL(video) : "";
+    referenceVideoUrlRef.current = url || null;
+    setReferenceVideoUrl(url);
+    setReferenceVideo(video);
   }
 
   async function saveAssignment(event: FormEvent<HTMLFormElement>) {
@@ -268,22 +389,49 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       setError("Video không được vượt quá 100 MB.");
       return;
     }
+    const movementCount = Number(form.get("soDongTac"));
+    if (movementCount !== 5 && movementCount !== 6) {
+      setError("Vui lòng chọn 5 hoặc 6 động tác.");
+      return;
+    }
+    if (referenceVideo !== video) selectReferenceVideo(video);
     setSaving(true);
+    setBusyAction(referenceAnalysis?.movementCount === movementCount ? "create-assignment" : "analyze-reference");
     setError("");
     try {
+      if (!referenceAnalysis || referenceAnalysis.movementCount !== movementCount) {
+        setReferenceAnalysis(null);
+        setReferenceBoundaryDrafts({});
+        const analysis = await analyzeAssignmentVideo(selectedClass.id, movementCount, video);
+        setReferenceAnalysis(analysis);
+        setReferenceBoundaryDrafts({});
+        notify(`AI đã chia video mẫu thành ${analysis.movementCount} đoạn. Hãy xem lại và chỉnh mốc thời gian.`);
+        return;
+      }
+      const validationMessage = referenceSegmentsValidationMessage(referenceAnalysis);
+      if (validationMessage) {
+        setError(validationMessage);
+        return;
+      }
       const assignment = await createAssignment(selectedClass.id, {
         tieuDe: String(form.get("tieuDe") ?? "").trim(),
         huongDan: String(form.get("huongDan") ?? "").trim(),
         hanNop: String(form.get("hanNop") ?? ""),
+        soDongTac: movementCount,
+        dongTacMau: getConfirmedReferenceMovements(referenceAnalysis),
         video,
       });
       setAssignments((current) => [assignment, ...current]);
       setAssignmentModalOpen(false);
-      notify("Đã thêm bài tập video.");
+      setReferenceAnalysis(null);
+      setReferenceBoundaryDrafts({});
+      selectReferenceVideo(null);
+      notify(`Đã tạo bài tập với ${assignment.aiDongTacMau?.length ?? 0} đoạn động tác đã xác nhận.`);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
       setSaving(false);
+      setBusyAction(null);
     }
   }
 
@@ -300,6 +448,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       return;
     }
     setSaving(true);
+    setBusyAction("submit-video");
     setError("");
     try {
       const submittedAssignment = await submitAssignment(selectedClass.id, assignment.id, video);
@@ -323,6 +472,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       setError(errorMessage(cause));
     } finally {
       setSaving(false);
+      setBusyAction(null);
     }
   }
 
@@ -336,6 +486,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
     const form = new FormData(event.currentTarget);
     const score = Number(form.get("diem"));
     setSaving(true);
+    setBusyAction(`save-grade-${submission.id}`);
     setError("");
     try {
       await gradeSubmission(
@@ -352,6 +503,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       setError(errorMessage(cause));
     } finally {
       setSaving(false);
+      setBusyAction(null);
     }
   }
 
@@ -372,6 +524,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
   async function exportClassResults() {
     if (!selectedClass || !isTeacher || exportingResults) return;
     setExportingResults(true);
+    setBusyAction("export-results");
     try {
       const rows = assignments.flatMap((assignment) =>
         selectedClass.hocSinh.map((student) => {
@@ -403,13 +556,14 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
             submission?.nhanXet ?? "",
             aiStatus,
             evaluation?.similarityPercent ?? "",
-            evaluation ? speedAssessmentLabel(evaluation.speedAssessment) : "",
-            evaluation?.speedDifferencePercent ?? "",
             evaluation?.suggestedScore ?? "",
             evaluation?.confidencePercent ?? "",
-            evaluation?.referenceMovementSeconds ?? "",
-            evaluation?.submissionMovementSeconds ?? "",
             evaluation?.scoreBreakdown ?? submission?.loiDanhGiaAi ?? "",
+            evaluation?.correctMovementCount ?? "",
+            evaluation?.incorrectMovementCount ?? "",
+            evaluation?.movements.map((movement) =>
+              `Động tác ${movement.movementNumber}: ${movement.pointsAwarded}/${movement.maxPoints}; ${movement.explanation}`,
+            ).join("\n") ?? "",
           ];
         }),
       );
@@ -428,16 +582,15 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
         "Nhận xét giáo viên",
         "Trạng thái AI",
         "Độ tương đồng (%)",
-        "Đánh giá tốc độ",
-        "Chênh lệch tốc độ (%)",
         "Điểm AI đề xuất (/10)",
         "Độ tin cậy AI (%)",
-        "Thời lượng động tác mẫu (giây)",
-        "Thời lượng động tác bài nộp (giây)",
         "Chi tiết AI / Lỗi đánh giá",
+        "Số động tác đạt",
+        "Số động tác chưa đạt",
+        "Chi tiết từng động tác",
       ];
       const columnWidths = [
-        14, 24, 16, 24, 30, 30, 20, 15, 20, 30, 18, 36, 16, 17, 22, 20, 19, 18, 26, 29, 60,
+        14, 24, 16, 24, 30, 30, 20, 15, 20, 30, 18, 36, 16, 17, 19, 18, 60, 16, 18, 70,
       ];
       const blob = await createXlsxWorkbook(headers, rows, columnWidths, "Kết quả bài tập");
       const downloadUrl = URL.createObjectURL(blob);
@@ -453,6 +606,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
       setError(`Không thể xuất Excel: ${errorMessage(cause)}`);
     } finally {
       setExportingResults(false);
+      setBusyAction(null);
     }
   }
 
@@ -473,7 +627,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
             </div>
           </div>
           {isTeacher && <div className="class-detail-actions">
-            <button className="button button-secondary" onClick={() => void exportClassResults()} disabled={assignments.length === 0 || exportingResults}><Icon name="download" size={15} /> {exportingResults ? "Đang xuất..." : "Xuất Excel"}</button>
+            <button className="button button-secondary" onClick={() => void exportClassResults()} disabled={assignments.length === 0 || exportingResults || saving}><Icon name="download" size={15} /> {exportingResults && <ButtonSpinner />} {exportingResults ? "Đang xuất..." : "Xuất Excel"}</button>
             <button className="button button-secondary" onClick={() => setStudentModalOpen(true)}><Icon name="users" size={15} /> Thêm học sinh</button>
           </div>}
         </div>
@@ -493,7 +647,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
                 <tbody>{selectedClass.hocSinh.slice((memberPage - 1) * PAGE_SIZE, memberPage * PAGE_SIZE).map((student, index) => (
                   <tr className={focusedStudentId === student.id ? "classroom-member-highlight" : undefined} key={student.id}>
                     <td>{(memberPage - 1) * PAGE_SIZE + index + 1}</td><td>{student.maSinhVien}</td><td><strong className="student-name">{student.hoTen}</strong></td><td>{student.email}</td>
-                    {isTeacher && <td><button className="student-action-button student-delete-button" aria-label={`Xóa ${student.hoTen} khỏi lớp`} disabled={saving} onClick={() => void removeStudent(student)}><Icon name="trash" size={15} /></button></td>}
+                    {isTeacher && <td><button className="student-action-button student-delete-button" aria-label={`Xóa ${student.hoTen} khỏi lớp`} disabled={saving} onClick={() => void removeStudent(student)}>{busyAction === `remove-student-${student.id}` ? <ButtonSpinner /> : <Icon name="trash" size={15} />}</button></td>}
                   </tr>
                 ))}</tbody>
               </table>
@@ -509,7 +663,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
 
         <div className="class-assignment-heading">
           <div><h3>Bài tập video</h3><p>{isTeacher ? "Thêm video hướng dẫn, xem bài nộp và chấm điểm." : "Nộp video và xem bài làm của các bạn trong lớp."}</p></div>
-          {isTeacher && <button className="button button-primary" onClick={() => setAssignmentModalOpen(true)}><Icon name="plus" size={16} /> Thêm bài tập</button>}
+          {isTeacher && <button className="button button-primary" onClick={() => { setReferenceAnalysis(null); setReferenceBoundaryDrafts({}); selectReferenceVideo(null); setError(""); setAssignmentModalOpen(true); }}><Icon name="plus" size={16} /> Thêm bài tập</button>}
         </div>
         {assignments.length ? (
           <div className="classroom-assignment-list">
@@ -560,6 +714,25 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
               <video className="classroom-video" controls preload="metadata" crossOrigin="use-credentials" src={videoSource(activeAssignment.videoUrl)}>
                 Trình duyệt không hỗ trợ phát video.
               </video>
+              {activeAssignment.aiDongTacMau?.length ? (
+                <div className="reference-movement-analysis">
+                  <div className="reference-movement-heading">
+                    <strong>AI nhận diện {activeAssignment.aiDongTacMau.length} động tác trong video mẫu</strong>
+                    <p>{activeAssignment.aiMoTaDongTacMau} Mỗi động tác đạt từ {activeAssignment.aiNguongDatPercent ?? 70}% độ tương đồng chuyển động sẽ nhận điểm; các động tác chia đều 10 điểm.</p>
+                  </div>
+                  <ol>
+                    {activeAssignment.aiDongTacMau.map((movement) => (
+                      <li key={movement.movementNumber}>
+                        <strong>Động tác {movement.movementNumber}</strong>
+                        <span>{formatVideoTime(movement.startSeconds)}–{formatVideoTime(movement.endSeconds)}</span>
+                        <small>Quan sát chính: {movement.focus}</small>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ) : (
+                <p className="reference-movement-unavailable">Bài tập cũ chưa có phân tích động tác mẫu. Kết quả AI sẽ tự chia video trong lần phân tích bài nộp.</p>
+              )}
             </section>
             {!isTeacher && (
               <div className="student-submit-panel">
@@ -569,7 +742,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
                 })()}
                 <form className="video-submit-form" onSubmit={(event) => void submitVideo(event, activeAssignment)}>
                   <label>Chọn video bài làm<input name="video" type="file" accept="video/*" required /></label>
-                  <button className="button button-primary" type="submit" disabled={saving}><Icon name="upload" size={15} />{saving ? "Đang tải lên và AI đánh giá..." : activeAssignment.baiNop.some((submission) => submission.baiCuaToi) ? "Nộp lại video" : "Nộp video"}</button>
+                  <button className="button button-primary" type="submit" disabled={saving}>{saving && <ButtonSpinner />}<Icon name="upload" size={15} />{saving ? "Đang tải lên và AI đánh giá..." : activeAssignment.baiNop.some((submission) => submission.baiCuaToi) ? "Nộp lại video" : "Nộp video"}</button>
                 </form>
               </div>
             )}
@@ -614,25 +787,25 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
                                   <>
                                     <section className="ai-evaluation-panel">
                                       <div><strong>Gợi ý phân tích AI</strong><p>So sánh video với bài mẫu; kết quả chỉ để tham khảo và không tự lưu điểm.</p></div>
-                                      <button type="button" className="button button-secondary" disabled={evaluatingSubmissionId !== null} onClick={() => void evaluateVideo(activeAssignment, submission)}>
-                                        {evaluatingSubmissionId === submission.id ? "Đang phân tích..." : evaluation ? "Phân tích lại" : "Phân tích video"}
+                                      <button type="button" className="button button-secondary" disabled={evaluatingSubmissionId !== null || saving || exportingResults} onClick={() => void evaluateVideo(activeAssignment, submission)}>
+                                        {evaluatingSubmissionId === submission.id && <ButtonSpinner />} {evaluatingSubmissionId === submission.id ? "Đang phân tích..." : evaluation ? "Phân tích lại" : "Phân tích video"}
                                       </button>
                                       {!evaluation && submission.trangThaiAi === "DANG_DANH_GIA" && <p className="ai-evaluation-error">AI đang phân tích bài nộp này.</p>}
                                       {!evaluation && submission.trangThaiAi === "LOI" && <p className="ai-evaluation-error">{submission.loiDanhGiaAi || "AI chưa phân tích được video."} Bạn có thể thử phân tích lại.</p>}
                                       {evaluation && (
                                         <div className="ai-evaluation-results">
                                           <div><strong>{evaluation.similarityPercent}%</strong><span>Động tác tương đồng</span></div>
-                                          <div><strong>{evaluation.speedAssessment === "SLOWER" ? "Chậm hơn" : evaluation.speedAssessment === "FASTER" ? "Nhanh hơn" : "Gần bằng"}</strong><span>{Math.abs(evaluation.speedDifferencePercent)}% thời lượng động tác</span></div>
                                           <div><strong>{evaluation.suggestedScore}/10</strong><span>Điểm AI gợi ý</span></div>
-                                          <p>Độ tin cậy nhận diện {evaluation.confidencePercent}%. Thời lượng động tác mẫu: {formatDuration(evaluation.referenceMovementSeconds)} · bài nộp: {formatDuration(evaluation.submissionMovementSeconds)}.</p>
-                                          <small>{evaluation.scoreBreakdown}. Tốc độ được ước lượng theo khoảng biến đổi góc gối; tư thế quay khuất hoặc chuyển động ít có thể ảnh hưởng kết quả.</small>
+                                          <p>Đạt {evaluation.correctMovementCount}/{evaluation.movementCount} động tác · chưa đạt {evaluation.incorrectMovementCount}. Độ tin cậy nhận diện {evaluation.confidencePercent}%.</p>
+                                          <small>AI so sánh góc khớp gối, hông, vai và khuỷu tay theo từng đoạn; tên động tác là số thứ tự, không phải nhận diện tên bài tập.</small>
+                                          <MovementEvaluationDetails evaluation={evaluation} />
                                         </div>
                                       )}
                                     </section>
                                     <form className="grade-form" onSubmit={(event) => void saveGrade(event, activeAssignment, submission)}>
                                         <label>Điểm chính thức (0–10)<input name="diem" type="number" min="0" max="10" step="0.1" required value={gradeDrafts[submission.id] ?? submission.diem?.toString() ?? evaluation?.suggestedScore.toString() ?? ""} onChange={(event) => setGradeDrafts((current) => ({ ...current, [submission.id]: event.target.value }))} /></label>
                                       <label>Nhận xét<input name="nhanXet" maxLength={2000} defaultValue={submission.nhanXet ?? ""} placeholder="Nhận xét cho học sinh" /></label>
-                                      <button type="submit" className="button button-primary" disabled={saving}>{saving ? "Đang lưu..." : "Lưu điểm thủ công"}</button>
+                                      <button type="submit" className="button button-primary" disabled={saving}>{busyAction === `save-grade-${submission.id}` && <ButtonSpinner />}{saving ? "Đang lưu..." : "Lưu điểm thủ công"}</button>
                                     </form>
                                   </>
                                 )}
@@ -642,8 +815,10 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
                                     {evaluation ? (
                                       <div className="ai-evaluation-results">
                                         <div><strong>{evaluation.similarityPercent}%</strong><span>Động tác tương đồng</span></div>
-                                        <div><strong>{evaluation.speedAssessment === "SLOWER" ? "Chậm hơn" : evaluation.speedAssessment === "FASTER" ? "Nhanh hơn" : "Gần bằng"}</strong><span>{Math.abs(evaluation.speedDifferencePercent)}% thời lượng động tác</span></div>
                                         <div><strong>{evaluation.suggestedScore}/10</strong><span>Điểm AI gợi ý</span></div>
+                                        <p>Bạn đạt {evaluation.correctMovementCount}/{evaluation.movementCount} động tác; {evaluation.incorrectMovementCount} động tác chưa đạt. Đây là điểm AI tham khảo, không phải điểm chính thức.</p>
+                                        <small>AI so sánh góc khớp gối, hông, vai và khuỷu tay với từng đoạn của video mẫu.</small>
+                                        <MovementEvaluationDetails evaluation={evaluation} />
                                       </div>
                                     ) : submission.trangThaiAi === "LOI" ? (
                                       <p className="ai-evaluation-error">{submission.loiDanhGiaAi || "AI chưa phân tích được video."}</p>
@@ -682,13 +857,13 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
 
   function renderClassModal() {
     return (
-      <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setClassModalOpen(false); }}>
+      <div className="modal-backdrop" onMouseDown={(event) => { if (!saving && event.target === event.currentTarget) setClassModalOpen(false); }}>
         <section className="member-modal student-modal" role="dialog" aria-modal="true" aria-labelledby="class-modal-title">
-          <div className="modal-heading"><div><span className="modal-icon"><Icon name="calendar" size={20} /></span><div><h2 id="class-modal-title">Tạo lớp học</h2><p>Tạo lớp và thêm học sinh sau khi lưu.</p></div></div><button className="subtle-icon-button" aria-label="Đóng" onClick={() => setClassModalOpen(false)}><Icon name="close" /></button></div>
+          <div className="modal-heading"><div><span className="modal-icon"><Icon name="calendar" size={20} /></span><div><h2 id="class-modal-title">Tạo lớp học</h2><p>Tạo lớp và thêm học sinh sau khi lưu.</p></div></div><button className="subtle-icon-button" aria-label="Đóng" onClick={() => setClassModalOpen(false)} disabled={saving}><Icon name="close" /></button></div>
           <form onSubmit={(event) => void saveClass(event)}>
             <label>Mã lớp<input name="maLop" required maxLength={50} placeholder="Ví dụ: CNTT-K22A" /></label>
             <label>Tên lớp<input name="tenLop" required maxLength={150} placeholder="Ví dụ: Tin học khóa 22A" /></label>
-            <div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setClassModalOpen(false)}>Hủy</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? "Đang tạo..." : "Tạo lớp học"}</button></div>
+            <div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setClassModalOpen(false)} disabled={saving}>Hủy</button><button type="submit" className="button button-primary" disabled={saving}>{saving && <ButtonSpinner />}{saving ? "Đang tạo..." : "Tạo lớp học"}</button></div>
           </form>
         </section>
       </div>
@@ -697,14 +872,14 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
 
   function renderStudentModal() {
     return (
-      <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setStudentModalOpen(false); }}>
+      <div className="modal-backdrop" onMouseDown={(event) => { if (!saving && event.target === event.currentTarget) setStudentModalOpen(false); }}>
         <section className="member-modal student-modal classroom-student-modal" role="dialog" aria-modal="true" aria-labelledby="student-modal-title">
-          <div className="modal-heading"><div><span className="modal-icon"><Icon name="users" size={20} /></span><div><h2 id="student-modal-title">Thêm học sinh vào lớp</h2><p>Chọn một hoặc nhiều học sinh. Học sinh có thể tham gia nhiều lớp.</p></div></div><button className="subtle-icon-button" aria-label="Đóng" onClick={() => setStudentModalOpen(false)}><Icon name="close" /></button></div>
+          <div className="modal-heading"><div><span className="modal-icon"><Icon name="users" size={20} /></span><div><h2 id="student-modal-title">Thêm học sinh vào lớp</h2><p>Chọn một hoặc nhiều học sinh. Học sinh có thể tham gia nhiều lớp.</p></div></div><button className="subtle-icon-button" aria-label="Đóng" onClick={() => setStudentModalOpen(false)} disabled={saving}><Icon name="close" /></button></div>
           {eligibleStudents.length ? <form onSubmit={(event) => void addStudents(event)}>
             <div className="classroom-student-picker">{eligibleStudents.map((student) => (
               <label key={student.id}><input type="checkbox" name="hocSinhIds" value={student.id} /><span><strong>{student.hoTen}</strong><small>{student.maSinhVien} · {student.email}</small></span></label>
             ))}</div>
-            <div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setStudentModalOpen(false)}>Hủy</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? "Đang thêm..." : "Thêm học sinh đã chọn"}</button></div>
+            <div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setStudentModalOpen(false)} disabled={saving}>Hủy</button><button type="submit" className="button button-primary" disabled={saving}>{saving && <ButtonSpinner />}{saving ? "Đang thêm..." : "Thêm học sinh đã chọn"}</button></div>
           </form> : <div className="class-empty-state">Không còn học sinh nào để thêm.</div>}
         </section>
       </div>
@@ -712,17 +887,60 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
   }
 
   function renderAssignmentModal() {
+    const validationMessage = referenceAnalysis
+      ? referenceSegmentsValidationMessage(referenceAnalysis)
+      : null;
+    const segmentsValid = referenceAnalysis !== null && validationMessage === null;
+    const confirmedMovements = referenceAnalysis
+      ? getConfirmedReferenceMovements(referenceAnalysis)
+      : [];
+    const closeModal = () => {
+      if (saving) return;
+      setAssignmentModalOpen(false);
+      setReferenceAnalysis(null);
+      setReferenceBoundaryDrafts({});
+      selectReferenceVideo(null);
+    };
     return (
-      <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAssignmentModalOpen(false); }}>
-        <section className="member-modal student-modal" role="dialog" aria-modal="true" aria-labelledby="assignment-modal-title">
-          <div className="modal-heading"><div><span className="modal-icon"><Icon name="video" size={20} /></span><div><h2 id="assignment-modal-title">Thêm bài tập video</h2><p>Tải video hướng dẫn để học sinh xem và nộp video trả lời.</p></div></div><button className="subtle-icon-button" aria-label="Đóng" onClick={() => setAssignmentModalOpen(false)}><Icon name="close" /></button></div>
+      <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
+        <section className="member-modal student-modal assignment-modal" role="dialog" aria-modal="true" aria-labelledby="assignment-modal-title">
+          <div className="modal-heading"><div><span className="modal-icon"><Icon name="video" size={20} /></span><div><h2 id="assignment-modal-title">Thêm bài tập video</h2><p>Chọn số động tác, để AI đề xuất đoạn rồi xem lại trước khi tạo bài.</p></div></div><button className="subtle-icon-button" aria-label="Đóng" onClick={closeModal} disabled={saving}><Icon name="close" /></button></div>
           <form onSubmit={(event) => void saveAssignment(event)}>
             <label>Tiêu đề<input name="tieuDe" required maxLength={150} placeholder="Ví dụ: Bài tập tuần 1" /></label>
             <label>Hướng dẫn<textarea name="huongDan" maxLength={4000} rows={3} placeholder="Mô tả yêu cầu bài tập" /></label>
             <label>Hạn nộp<input name="hanNop" type="datetime-local" /></label>
-            <label className="video-file-label">Video hướng dẫn<input name="video" type="file" accept="video/*" required /></label>
-            <p className="password-help">Định dạng video; tối đa 100 MB. Tệp được lưu trên máy chủ.</p>
-            <div className="modal-actions"><button type="button" className="button button-secondary" onClick={() => setAssignmentModalOpen(false)}>Hủy</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? "Đang tải lên..." : "Tạo bài tập"}</button></div>
+            <label>Số động tác<select name="soDongTac" defaultValue="5" onChange={() => { setReferenceAnalysis(null); setReferenceBoundaryDrafts({}); }}><option value="5">5 động tác</option><option value="6">6 động tác</option></select></label>
+            <label className="video-file-label">Video hướng dẫn<input name="video" type="file" accept="video/*" required onChange={(event) => { selectReferenceVideo(event.target.files?.[0] ?? null); setReferenceAnalysis(null); setReferenceBoundaryDrafts({}); }} /></label>
+            <p className="password-help">Quay rõ toàn thân và thực hiện động tác theo thứ tự. Mỗi động tác mặc định cần đạt 70% để được tính điểm. AI chia đoạn dựa trên thay đổi tư thế; hãy kiểm tra mốc thời gian do AI đề xuất. Video tối đa 100 MB.</p>
+            {referenceAnalysis && referenceVideoUrl && (
+              <section className="reference-segment-editor" aria-label="Xem và chỉnh các đoạn động tác">
+                <div className="reference-segment-editor-heading">
+                  <div><strong>AI đề xuất {referenceAnalysis.movementCount} đoạn</strong><small>Video dài {formatDuration(referenceAnalysis.durationSeconds)} · độ phủ nhận diện {referenceAnalysis.confidencePercent}%</small></div>
+                  <span>{segmentsValid ? "Sẵn sàng xác nhận" : validationMessage}</span>
+                </div>
+                <video ref={referenceVideoElement} className="reference-segment-video" src={referenceVideoUrl} controls preload="metadata" />
+                <p className="password-help">Các thời gian tính bằng giây. Chỉnh điểm đầu/cuối từng đoạn; đoạn không được chồng lấn và phải dài ít nhất 0,5 giây.</p>
+                <ol className="reference-segment-edit-list">
+                  {referenceAnalysis.movements.map((movement, index) => (
+                    <li key={movement.movementNumber}>
+                      <strong>Động tác {movement.movementNumber} · {movement.focus}</strong>
+                      <label>Bắt đầu (giây)<input type="text" inputMode="decimal" value={referenceBoundaryDrafts[`${index}.startSeconds`] ?? String(movement.startSeconds)} onChange={(event) => updateReferenceMovement(index, "startSeconds", event.target.value)} /><button type="button" disabled={saving} onClick={() => setMovementBoundaryToPlaybackTime(index, "startSeconds")}>Lấy thời điểm đang phát</button></label>
+                      <label>Kết thúc (giây)<input type="text" inputMode="decimal" value={referenceBoundaryDrafts[`${index}.endSeconds`] ?? String(movement.endSeconds)} onChange={(event) => updateReferenceMovement(index, "endSeconds", event.target.value)} /><button type="button" disabled={saving} onClick={() => setMovementBoundaryToPlaybackTime(index, "endSeconds")}>Lấy thời điểm đang phát</button></label>
+                      <small>{formatVideoTime(confirmedMovements[index].startSeconds)} – {formatVideoTime(confirmedMovements[index].endSeconds)} · {Number.isFinite(confirmedMovements[index].durationSeconds) ? formatDuration(confirmedMovements[index].durationSeconds) : "Thời gian chưa hợp lệ"}</small>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+            <div className="modal-actions">
+              <button type="button" className="button button-secondary" onClick={closeModal} disabled={saving}>Hủy</button>
+              <button type="submit" className="button button-primary" disabled={saving || (!!referenceAnalysis && !segmentsValid)}>
+                {saving && <ButtonSpinner />}
+                {saving
+                  ? referenceAnalysis ? "Đang tạo bài tập..." : "AI đang phân tích video mẫu..."
+                  : referenceAnalysis ? "Xác nhận đoạn và tạo bài tập" : "Phân tích video mẫu"}
+              </button>
+            </div>
           </form>
         </section>
       </div>
@@ -747,7 +965,7 @@ export function ClassesManagement({ role, notify, target, onTargetHandled }: Cla
               <tbody>{pageClassrooms.map((classroom, index) => (
                 <tr key={classroom.id}>
                   <td>{(currentPage - 1) * PAGE_SIZE + index + 1}</td><td><span className="student-class">{classroom.maLop}</span></td><td><strong className="student-name">{classroom.tenLop}</strong></td><td>{classroom.tenGiaoVien}</td><td>{classroom.soHocSinh}</td><td>{formatDate(classroom.ngayTao)}</td>
-                  <td><button className="student-action-button class-open-button" aria-label={`Mở lớp ${classroom.tenLop}`} onClick={() => void openClass(classroom)}><Icon name="video" size={15} /></button></td>
+                  <td><button className="student-action-button class-open-button" aria-label={`Mở lớp ${classroom.tenLop}`} disabled={openingClassId !== null} onClick={() => void openClass(classroom)}>{openingClassId === classroom.id ? <ButtonSpinner /> : <Icon name="video" size={15} />}</button></td>
                 </tr>
               ))}</tbody>
             </table>
