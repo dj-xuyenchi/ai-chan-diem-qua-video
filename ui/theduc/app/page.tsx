@@ -263,7 +263,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         </a>
         <div className="club-switcher">
           <span className="club-avatar">F</span>
-          <span className="club-copy"><strong>DH Thủy Lợi</strong><small>Hà Nội</small></span>
+          <span className="club-copy"><strong>DH Kiến trúc</strong><small>Hà Nội</small></span>
           <Icon name="chevron" size={16} className="switch-chevron" />
         </div>
 
@@ -302,7 +302,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       <section className="main-panel">
         <header className="topbar">
           <button className="mobile-menu-button" aria-label="Mở menu" onClick={() => setMobileNavOpen(true)}><Icon name="menu" /></button>
-          <div className="breadcrumbs"><span>DH Thủy Lợi</span><Icon name="chevron" size={14} /><strong>{activeNav}</strong></div>
+          <div className="breadcrumbs"><span>DH Kiến trúc</span><Icon name="chevron" size={14} /><strong>{activeNav}</strong></div>
           <div className="topbar-actions">
             <div className={`global-search-wrap${showSearchResults ? " global-search-open" : ""}`}>
               <label className="global-search" onClick={() => {
